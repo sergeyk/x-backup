@@ -1,271 +1,9 @@
-#!/usr/bin/env node
-
-/**
- * x-backup: Back up your tweets to a beautiful, searchable HTML archive.
- */
-
-const fs = require("fs");
-const path = require("path");
-const vm = require("vm");
-
-function parseTweetsJs(filePath) {
-  const content = fs.readFileSync(filePath, "utf-8");
-
-  // Create a context with window.YTD structure
-  const context = {
-    window: { YTD: { tweets: {} } },
-  };
-  vm.createContext(context);
-  vm.runInContext(content, context);
-
-  // Extract tweets from the parsed data
-  const parts = Object.values(context.window.YTD.tweets);
-  const tweets = [];
-  for (const part of parts) {
-    for (const item of part) {
-      if (item.tweet) {
-        tweets.push(item.tweet);
-      }
-    }
-  }
-  return tweets;
-}
-
-function parseAccountJs(exportPath) {
-  // Try to find and parse account.js to get username
-  const accountPaths = [path.join(exportPath, "data", "account.js"), path.join(exportPath, "account.js")];
-
-  for (const accountFile of accountPaths) {
-    if (fs.existsSync(accountFile)) {
-      try {
-        const content = fs.readFileSync(accountFile, "utf-8");
-        const context = {
-          window: { YTD: { account: {} } },
-        };
-        vm.createContext(context);
-        vm.runInContext(content, context);
-
-        const parts = Object.values(context.window.YTD.account);
-        for (const part of parts) {
-          for (const item of part) {
-            if (item.account && item.account.username) {
-              return item.account.username;
-            }
-          }
-        }
-      } catch {
-        continue;
-      }
-    }
-  }
-  return null;
-}
-
-function parseTweetDate(dateStr) {
-  // Parse Twitter's date format: 'Mon Aug 06 00:51:29 +0000 2018'
-  return new Date(dateStr);
-}
-
-function escapeHtml(text) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function formatTweetText(tweet) {
-  let text = tweet.full_text || "";
-  const entities = tweet.entities || {};
-
-  // Collect all entities with their indices
-  const replacements = [];
-
-  // User mentions
-  for (const mention of entities.user_mentions || []) {
-    const start = parseInt(mention.indices[0]);
-    const end = parseInt(mention.indices[1]);
-    const screenName = mention.screen_name;
-    const replacement = `<a href="https://twitter.com/${screenName}" target="_blank" rel="noopener" class="mention">@${screenName}</a>`;
-    replacements.push({ start, end, replacement });
-  }
-
-  // URLs (but not media URLs which we handle separately)
-  const mediaUrls = new Set();
-  for (const media of entities.media || []) {
-    if (media.url) mediaUrls.add(media.url);
-  }
-
-  for (const urlEntity of entities.urls || []) {
-    const start = parseInt(urlEntity.indices[0]);
-    const end = parseInt(urlEntity.indices[1]);
-    const expandedUrl = urlEntity.expanded_url || urlEntity.url || "";
-    const displayUrl = urlEntity.display_url || expandedUrl;
-    const replacement = `<a href="${escapeHtml(expandedUrl)}" target="_blank" rel="noopener" class="link">${escapeHtml(displayUrl)}</a>`;
-    replacements.push({ start, end, replacement });
-  }
-
-  // Hashtags
-  for (const hashtag of entities.hashtags || []) {
-    const start = parseInt(hashtag.indices[0]);
-    const end = parseInt(hashtag.indices[1]);
-    const tag = hashtag.text;
-    const replacement = `<a href="https://twitter.com/hashtag/${tag}" target="_blank" rel="noopener" class="hashtag">#${tag}</a>`;
-    replacements.push({ start, end, replacement });
-  }
-
-  // Remove media URLs from text (we display images separately)
-  for (const media of entities.media || []) {
-    const start = parseInt(media.indices[0]);
-    const end = parseInt(media.indices[1]);
-    replacements.push({ start, end, replacement: "" });
-  }
-
-  // Sort by start index in reverse order to replace from end to start
-  replacements.sort((a, b) => b.start - a.start);
-
-  // Apply replacements
-  for (const { start, end, replacement } of replacements) {
-    text = text.slice(0, start) + replacement + text.slice(end);
-  }
-
-  // Convert newlines to <br>
-  text = text.replace(/\n/g, "<br>");
-
-  return text;
-}
-
-function getTweetType(tweet) {
-  const fullText = tweet.full_text || "";
-
-  // Check for retweet
-  if (fullText.startsWith("RT @") || tweet.retweeted_status) {
-    return "retweet";
-  }
-
-  // Check for reply
-  if (tweet.in_reply_to_status_id_str || tweet.in_reply_to_user_id_str) {
-    return "reply";
-  }
-
-  return "post";
-}
-
-function getMediaFiles(tweet, mediaDir) {
-  const mediaFiles = [];
-  const tweetId = tweet.id_str || tweet.id || "";
-
-  if (!mediaDir || !fs.existsSync(mediaDir)) {
-    return mediaFiles;
-  }
-
-  // Find all files for this tweet
-  const files = fs.readdirSync(mediaDir);
-  const tweetFiles = files.filter((f) => f.startsWith(`${tweetId}-`)).sort();
-
-  for (const file of tweetFiles) {
-    mediaFiles.push({
-      path: `images/${file}`,
-      type: "photo",
-      alt: `Media from tweet ${tweetId}`,
-    });
-  }
-
-  return mediaFiles;
-}
-
-function generateHtml(tweets, mediaDir, username) {
-  // Sort tweets by date (newest first)
-  const tweetsWithDates = [];
-  for (const tweet of tweets) {
-    try {
-      const dt = parseTweetDate(tweet.created_at);
-      if (!isNaN(dt.getTime())) {
-        tweetsWithDates.push({ date: dt, tweet });
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  tweetsWithDates.sort((a, b) => b.date.getTime() - a.date.getTime());
-
-  if (tweetsWithDates.length === 0) {
-    return "<html><body><p>No tweets found.</p></body></html>";
-  }
-
-  // Build tweets HTML and search index
-  const tweetsHtml = [];
-  const searchIndex = [];
-  const typeCounts = { post: 0, reply: 0, retweet: 0 };
-  let maxLikes = 0;
-
-  for (const { date: dt, tweet } of tweetsWithDates) {
-    const tweetId = tweet.id_str || tweet.id || "";
-    const fullText = tweet.full_text || "";
-    const formattedText = formatTweetText(tweet);
-    const tweetType = getTweetType(tweet);
-    typeCounts[tweetType]++;
-
-    // Get media
-    const mediaFiles = getMediaFiles(tweet, mediaDir);
-    let mediaHtml = "";
-    if (mediaFiles.length > 0) {
-      const mediaItems = mediaFiles.map(
-        (m) => `<img loading="lazy" src="${escapeHtml(m.path)}" alt="${escapeHtml(m.alt)}" class="tweet-media">`,
-      );
-      mediaHtml = `<div class="tweet-media-container">${mediaItems.join("")}</div>`;
-    }
-
-    // Format date for display
-    const dateDisplay = dt.toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
-    const timestamp = dt.getTime();
-
-    // Stats
-    const likes = parseInt(tweet.favorite_count) || 0;
-    const retweets = parseInt(tweet.retweet_count) || 0;
-    if (likes > maxLikes) maxLikes = likes;
-
-    const tweetHtml = `
-        <article class="tweet" data-timestamp="${timestamp}" data-id="${tweetId}" data-type="${tweetType}" data-likes="${likes}">
-            <div class="tweet-content">${formattedText}</div>
-            ${mediaHtml}
-            <div class="tweet-footer">
-                <time datetime="${dt.toISOString()}">${dateDisplay}</time>
-                <div class="tweet-stats">
-                    <span class="stat" title="Retweets">🔁 ${retweets}</span>
-                    <span class="stat" title="Likes">❤️ ${likes}</span>
-                </div>
-                <a href="https://twitter.com/i/status/${tweetId}" target="_blank" rel="noopener" class="tweet-link">View on X</a>
-            </div>
-        </article>`;
-
-    tweetsHtml.push(tweetHtml);
-
-    // Add to search index (plain text for searching)
-    const plainText = fullText.replace(/<[^>]+>/g, "").toLowerCase();
-    searchIndex.push({
-      id: tweetId,
-      text: plainText,
-      timestamp: timestamp,
-      type: tweetType,
-    });
-  }
-
-  // Generate the full HTML
-  const html = `<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>X/Twitter Archive${username ? ` for @${username}` : ""}</title>
+    <title>X/Twitter Archive</title>
     <style>
         :root {
             --bg-color: #15202b;
@@ -312,6 +50,7 @@ function generateHtml(tweets, mediaDir, username) {
         h1 {
             font-size: 20px;
             font-weight: 700;
+            margin-bottom: 16px;
             display: flex;
             align-items: center;
             gap: 8px;
@@ -613,7 +352,7 @@ function generateHtml(tweets, mediaDir, username) {
         <header>
             <div class="sticky-top">
                 <div class="header-row">
-                    <h1>X/Twitter Archive${username ? ` for @${username}` : ""}</h1>
+                    <h1>X/Twitter Archive</h1>
                     <a href="https://github.com/sergeyk/x-backup" target="_blank" rel="noopener" class="github-link">
                         <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
                         GitHub
@@ -635,28 +374,52 @@ function generateHtml(tweets, mediaDir, username) {
                     <div class="filter-group">
                         <label>Min likes</label>
                         <div class="likes-filter">
-                            <input type="range" id="min-likes" min="0" max="${maxLikes}" value="0">
+                            <input type="range" id="min-likes" min="0" max="80" value="0">
                             <span class="likes-value" id="min-likes-value">0</span>
                         </div>
                     </div>
                 </div>
                 <div class="tabs">
-                    <button class="tab active" data-type="post">Posts <span class="tab-count">${typeCounts.post}</span></button>
-                    <button class="tab" data-type="reply">Replies <span class="tab-count">${typeCounts.reply}</span></button>
-                    <button class="tab" data-type="retweet">Retweets <span class="tab-count">${typeCounts.retweet}</span></button>
+                    <button class="tab active" data-type="post">Posts <span class="tab-count">2</span></button>
+                    <button class="tab" data-type="reply">Replies <span class="tab-count">0</span></button>
+                    <button class="tab" data-type="retweet">Retweets <span class="tab-count">0</span></button>
                 </div>
             </div>
         </header>
 
         <main class="tweets">
-            ${tweetsHtml.join("")}
+            
+        <article class="tweet" data-timestamp="1534553499000" data-id="1030618189682507777" data-type="post" data-likes="16">
+            <div class="tweet-content">Huge fan of <a href="https://twitter.com/TessFerrandez" target="_blank" rel="noopener" class="mention">@TessFerrandez</a> notes on the <a href="http://deeplearning.ai" target="_blank" rel="noopener" class="link">deeplearning.ai</a> course: <a href="https://www.slideshare.net/TessFerrandez/notes-from-coursera-deep-learning-courses-by-andrew-ng" target="_blank" rel="noopener" class="link">slideshare.net/TessFerrandez/…</a></div>
+            
+            <div class="tweet-footer">
+                <time datetime="2018-08-18T00:51:39.000Z">Aug 17, 2018, 5:51 PM</time>
+                <div class="tweet-stats">
+                    <span class="stat" title="Retweets">🔁 1</span>
+                    <span class="stat" title="Likes">❤️ 16</span>
+                </div>
+                <a href="https://twitter.com/i/status/1030618189682507777" target="_blank" rel="noopener" class="tweet-link">View on X</a>
+            </div>
+        </article>
+        <article class="tweet" data-timestamp="1533516689000" data-id="1026269496686731265" data-type="post" data-likes="80">
+            <div class="tweet-content">Brilliant lectures by <a href="https://twitter.com/jiayq" target="_blank" rel="noopener" class="mention">@jiayq</a> and <a href="https://twitter.com/l2k" target="_blank" rel="noopener" class="mention">@l2k</a> on the last day of the Full Stack Deep Learning bootcamp! It was an honor to host such a fantastic group of learners. <a href="https://twitter.com/pabbeel" target="_blank" rel="noopener" class="mention">@pabbeel</a>, <a href="https://twitter.com/josh_tobin_" target="_blank" rel="noopener" class="mention">@josh_tobin_</a>, the <a href="https://twitter.com/gradescope" target="_blank" rel="noopener" class="mention">@gradescope</a> crew and I are very thankful to everyone who attended! </div>
+            <div class="tweet-media-container"><img loading="lazy" src="images/1026269496686731265-Dj4KqZ3UwAE3bge.jpg" alt="Media from tweet 1026269496686731265" class="tweet-media"><img loading="lazy" src="images/1026269496686731265-Dj4KqZ4U8AANR-1.jpg" alt="Media from tweet 1026269496686731265" class="tweet-media"><img loading="lazy" src="images/1026269496686731265-Dj4KqZ4UUAAcLFJ.jpg" alt="Media from tweet 1026269496686731265" class="tweet-media"></div>
+            <div class="tweet-footer">
+                <time datetime="2018-08-06T00:51:29.000Z">Aug 5, 2018, 5:51 PM</time>
+                <div class="tweet-stats">
+                    <span class="stat" title="Retweets">🔁 28</span>
+                    <span class="stat" title="Likes">❤️ 80</span>
+                </div>
+                <a href="https://twitter.com/i/status/1026269496686731265" target="_blank" rel="noopener" class="tweet-link">View on X</a>
+            </div>
+        </article>
             <div class="no-results hidden" id="no-results">No tweets match your search.</div>
         </main>
     </div>
 
     <script>
         // Search index
-        const searchIndex = ${JSON.stringify(searchIndex)};
+        const searchIndex = [{"id":"1030618189682507777","text":"huge fan of @tessferrandez notes on the https://t.co/gsgxgxd34l course: https://t.co/jjfsshla3t","timestamp":1534553499000,"type":"post"},{"id":"1026269496686731265","text":"brilliant lectures by @jiayq and @l2k on the last day of the full stack deep learning bootcamp! it was an honor to host such a fantastic group of learners. @pabbeel, @josh_tobin_, the @gradescope crew and i are very thankful to everyone who attended! https://t.co/xklfcktwje","timestamp":1533516689000,"type":"post"}];
 
         // Simple stemmer for basic word matching
         function stem(word) {
@@ -672,7 +435,7 @@ function generateHtml(tweets, mediaDir, username) {
 
         function tokenize(text) {
             return text.toLowerCase()
-                .split(/\\s+/)
+                .split(/\s+/)
                 .map(stem)
                 .filter(w => w.length > 0);
         }
@@ -770,101 +533,4 @@ function generateHtml(tweets, mediaDir, username) {
         });
     </script>
 </body>
-</html>`;
-
-  return html;
-}
-
-function main() {
-  const args = process.argv.slice(2);
-
-  if (args.length === 0 || args.includes("-h") || args.includes("--help")) {
-    console.log(`
-x-backup - Generate a beautiful HTML archive from your Twitter data export
-
-Usage: x-backup <path-to-twitter-export> [-o output-dir]
-
-Options:
-  -o, --output  Output directory (default: x-backup)
-  -h, --help    Show this help message
-
-Example:
-  x-backup ~/Downloads/twitter-archive
-  x-backup ~/Downloads/twitter-archive -o my-tweets
-    `);
-    process.exit(args.length === 0 ? 1 : 0);
-  }
-
-  let exportPath = args[0];
-  let outputPath = "x-backup";
-
-  // Parse output flag
-  const outputIndex = args.findIndex((a) => a === "-o" || a === "--output");
-  if (outputIndex !== -1 && args[outputIndex + 1]) {
-    outputPath = args[outputIndex + 1];
-  }
-
-  exportPath = path.resolve(exportPath);
-  outputPath = path.resolve(outputPath);
-
-  // Find tweets.js
-  let tweetsFile = path.join(exportPath, "data", "tweets.js");
-  if (!fs.existsSync(tweetsFile)) {
-    tweetsFile = path.join(exportPath, "tweets.js");
-  }
-
-  if (!fs.existsSync(tweetsFile)) {
-    console.error(`Error: Could not find tweets.js in ${exportPath}`);
-    console.error("Expected at: <export>/data/tweets.js");
-    process.exit(1);
-  }
-
-  // Find media directory
-  let mediaDir = path.join(exportPath, "data", "tweets_media");
-  if (!fs.existsSync(mediaDir)) {
-    mediaDir = path.join(exportPath, "tweets_media");
-  }
-  if (!fs.existsSync(mediaDir)) {
-    mediaDir = null;
-  }
-
-  console.log(`📖 Reading tweets from ${tweetsFile}`);
-  const tweets = parseTweetsJs(tweetsFile);
-  console.log(`📊 Found ${tweets.length} tweets`);
-
-  // Try to get username from account.js
-  const username = parseAccountJs(exportPath);
-  if (username) {
-    console.log(`👤 Found username: @${username}`);
-  }
-
-  // Create output directory
-  fs.mkdirSync(outputPath, { recursive: true });
-  const imagesPath = path.join(outputPath, "images");
-  fs.mkdirSync(imagesPath, { recursive: true });
-
-  // Copy media files
-  if (mediaDir) {
-    const mediaFiles = fs.readdirSync(mediaDir);
-    console.log(`🖼️  Copying ${mediaFiles.length} media files...`);
-    for (const file of mediaFiles) {
-      const srcPath = path.join(mediaDir, file);
-      if (fs.statSync(srcPath).isFile()) {
-        fs.copyFileSync(srcPath, path.join(imagesPath, file));
-      }
-    }
-  }
-
-  // Generate HTML
-  console.log("🔨 Generating HTML archive...");
-  const html = generateHtml(tweets, mediaDir || "", username);
-
-  // Write HTML file
-  const htmlFile = path.join(outputPath, "index.html");
-  fs.writeFileSync(htmlFile, html, "utf-8");
-
-  console.log(`✅ Archive created at ${outputPath}`);
-  console.log(`   Open ${htmlFile} in your browser to view`);
-}
-
-main();
+</html>

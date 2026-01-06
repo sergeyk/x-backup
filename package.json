@@ -1,6 +1,6 @@
 {
   "name": "x-backup",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Back up your tweets to a beautiful, searchable HTML archive",
   "main": "index.js",
   "bin": {

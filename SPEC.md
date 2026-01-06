@@ -11,3 +11,7 @@ x-backup <path-to-twitter-data-export>
 This outputs `x-backup/` with `index.html` and `images/` in it. `index.html` is a self-contained HTML file with all of your tweets. It's searchable via a search box on top (stemming, etc). It's filterable by date range (slider with two handles). Images lazy load so it's not too long to load initially (and perhaps there are other tricks to use, too, like templates). The tweets should look good.
 
 You can practice with a sample Twitter data export in `sample_export/`. You can see how X.com renders the tweets in there in `sample_expected/`.
+
+# TODO
+
+- Set up automatic publishing to npm
