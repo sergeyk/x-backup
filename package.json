@@ -1,0 +1,33 @@
+{
+  "name": "x-backup",
+  "version": "1.0.0",
+  "description": "Back up your tweets to a beautiful, searchable HTML archive",
+  "main": "index.js",
+  "bin": {
+    "x-backup": "index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node index.js sample_export/"
+  },
+  "keywords": [
+    "twitter",
+    "archive",
+    "backup",
+    "tweets",
+    "html",
+    "export"
+  ],
+  "author": "Sergey Karayev",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sergeyk/x-backup.git"
+  },
+  "engines": {
+    "node": ">=14"
+  },
+  "files": [
+    "index.js"
+  ]
+}
