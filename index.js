@@ -175,6 +175,97 @@ function getMediaFiles(tweet, mediaDir) {
   return mediaFiles;
 }
 
+function yamlEscape(str) {
+  if (str === null || str === undefined) return '""';
+  str = String(str);
+  // If string contains special characters, quote it
+  if (/[\n\r:#\[\]{}&*!|>'"%@`,?]/.test(str) || str.trim() !== str || str === "") {
+    return '"' + str.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n") + '"';
+  }
+  return str;
+}
+
+function generateYaml(tweets) {
+  // Sort tweets by date (newest first)
+  const tweetsWithDates = [];
+  for (const tweet of tweets) {
+    try {
+      const dt = parseTweetDate(tweet.created_at);
+      if (!isNaN(dt.getTime())) {
+        tweetsWithDates.push({ date: dt, tweet });
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  tweetsWithDates.sort((a, b) => b.date.getTime() - a.date.getTime());
+
+  const lines = [];
+  for (const { date: dt, tweet } of tweetsWithDates) {
+    const tweetId = tweet.id_str || tweet.id || "";
+    const fullText = tweet.full_text || "";
+    const tweetType = getTweetType(tweet);
+    const likes = parseInt(tweet.favorite_count) || 0;
+    const retweets = parseInt(tweet.retweet_count) || 0;
+
+    // Extract media URLs
+    const mediaUrls = [];
+    const extMedia = (tweet.extended_entities && tweet.extended_entities.media) || tweet.entities?.media || [];
+    for (const m of extMedia) {
+      if (m.media_url_https) mediaUrls.push(m.media_url_https);
+      else if (m.media_url) mediaUrls.push(m.media_url);
+    }
+
+    // Extract mentioned usernames
+    const mentions = [];
+    for (const m of tweet.entities?.user_mentions || []) {
+      if (m.screen_name) mentions.push(m.screen_name);
+    }
+
+    // Extract URLs
+    const urls = [];
+    for (const u of tweet.entities?.urls || []) {
+      if (u.expanded_url) urls.push(u.expanded_url);
+    }
+
+    // Extract hashtags
+    const hashtags = [];
+    for (const h of tweet.entities?.hashtags || []) {
+      if (h.text) hashtags.push(h.text);
+    }
+
+    lines.push(`- id: ${yamlEscape(tweetId)}`);
+    lines.push(`  date: ${yamlEscape(dt.toISOString())}`);
+    lines.push(`  type: ${tweetType}`);
+    lines.push(`  text: ${yamlEscape(fullText)}`);
+    lines.push(`  likes: ${likes}`);
+    lines.push(`  retweets: ${retweets}`);
+
+    if (mentions.length > 0) {
+      lines.push(`  mentions:`);
+      for (const m of mentions) lines.push(`    - ${yamlEscape(m)}`);
+    }
+
+    if (urls.length > 0) {
+      lines.push(`  urls:`);
+      for (const u of urls) lines.push(`    - ${yamlEscape(u)}`);
+    }
+
+    if (hashtags.length > 0) {
+      lines.push(`  hashtags:`);
+      for (const h of hashtags) lines.push(`    - ${yamlEscape(h)}`);
+    }
+
+    if (mediaUrls.length > 0) {
+      lines.push(`  media:`);
+      for (const m of mediaUrls) lines.push(`    - ${yamlEscape(m)}`);
+    }
+  }
+
+  return lines.join("\n") + "\n";
+}
+
 function generateHtml(tweets, mediaDir, username) {
   // Sort tweets by date (newest first)
   const tweetsWithDates = [];
@@ -199,8 +290,6 @@ function generateHtml(tweets, mediaDir, username) {
   const tweetsHtml = [];
   const searchIndex = [];
   const typeCounts = { post: 0, reply: 0, retweet: 0 };
-  let maxLikes = 0;
-
   for (const { date: dt, tweet } of tweetsWithDates) {
     const tweetId = tweet.id_str || tweet.id || "";
     const fullText = tweet.full_text || "";
@@ -231,8 +320,6 @@ function generateHtml(tweets, mediaDir, username) {
     // Stats
     const likes = parseInt(tweet.favorite_count) || 0;
     const retweets = parseInt(tweet.retweet_count) || 0;
-    if (likes > maxLikes) maxLikes = likes;
-
     const tweetHtml = `
         <article class="tweet" data-timestamp="${timestamp}" data-id="${tweetId}" data-type="${tweetType}" data-likes="${likes}">
             <div class="tweet-content">${formattedText}</div>
@@ -408,48 +495,6 @@ function generateHtml(tweets, mediaDir, username) {
             color: var(--text-color);
             font-size: 14px;
             cursor: pointer;
-        }
-
-        .likes-filter {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .likes-filter input[type="range"] {
-            flex: 1;
-            height: 4px;
-            -webkit-appearance: none;
-            appearance: none;
-            background: var(--border-color);
-            border-radius: 2px;
-            outline: none;
-        }
-
-        .likes-filter input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 16px;
-            height: 16px;
-            background: var(--accent-color);
-            border-radius: 50%;
-            cursor: pointer;
-        }
-
-        .likes-filter input[type="range"]::-moz-range-thumb {
-            width: 16px;
-            height: 16px;
-            background: var(--accent-color);
-            border-radius: 50%;
-            cursor: pointer;
-            border: none;
-        }
-
-        .likes-value {
-            min-width: 40px;
-            text-align: right;
-            font-size: 14px;
-            color: var(--text-color);
         }
 
         .tabs {
@@ -634,10 +679,15 @@ function generateHtml(tweets, mediaDir, username) {
                     </div>
                     <div class="filter-group">
                         <label>Min likes</label>
-                        <div class="likes-filter">
-                            <input type="range" id="min-likes" min="0" max="${maxLikes}" value="0">
-                            <span class="likes-value" id="min-likes-value">0</span>
-                        </div>
+                        <select id="min-likes" class="sort-select">
+                            <option value="0">0</option>
+                            <option value="5">5</option>
+                            <option value="10">10</option>
+                            <option value="50">50</option>
+                            <option value="150">150</option>
+                            <option value="500">500</option>
+                            <option value="5000">5000</option>
+                        </select>
                     </div>
                 </div>
                 <div class="tabs">
@@ -680,8 +730,7 @@ function generateHtml(tweets, mediaDir, username) {
         // Filter functionality
         const searchInput = document.getElementById('search');
         const sortBy = document.getElementById('sort-by');
-        const minLikesSlider = document.getElementById('min-likes');
-        const minLikesValue = document.getElementById('min-likes-value');
+        const minLikesSelect = document.getElementById('min-likes');
         const noResults = document.getElementById('no-results');
         const tweetsContainer = document.querySelector('.tweets');
         const tweets = Array.from(document.querySelectorAll('.tweet'));
@@ -691,7 +740,7 @@ function generateHtml(tweets, mediaDir, username) {
         function filterAndSort() {
             const query = searchInput.value.trim();
             const queryTokens = tokenize(query);
-            const minLikes = parseInt(minLikesSlider.value) || 0;
+            const minLikes = parseInt(minLikesSelect.value) || 0;
             const sortMode = sortBy.value;
 
             let visibleCount = 0;
@@ -740,11 +789,8 @@ function generateHtml(tweets, mediaDir, username) {
             noResults.classList.toggle('hidden', visibleCount > 0);
         }
 
-        // Update likes value display
-        minLikesSlider.addEventListener('input', () => {
-            minLikesValue.textContent = minLikesSlider.value;
-            filterAndSort();
-        });
+        // Update likes filter
+        minLikesSelect.addEventListener('change', filterAndSort);
 
         // Initial filter to show only posts
         filterAndSort();
@@ -782,26 +828,39 @@ function main() {
     console.log(`
 x-backup - Generate a beautiful HTML archive from your Twitter data export
 
-Usage: x-backup <path-to-twitter-export> [-o output-dir]
+Usage: x-backup <path-to-twitter-export> [-o output-dir] [-s since-date]
 
 Options:
   -o, --output  Output directory (default: x-backup)
+  -s, --since   Only include posts since this date (e.g. 2024-01-01)
   -h, --help    Show this help message
 
 Example:
   x-backup ~/Downloads/twitter-archive
   x-backup ~/Downloads/twitter-archive -o my-tweets
+  x-backup ~/Downloads/twitter-archive -s 2024-01-01
     `);
     process.exit(args.length === 0 ? 1 : 0);
   }
 
   let exportPath = args[0];
   let outputPath = "x-backup";
+  let sinceDate = null;
 
   // Parse output flag
   const outputIndex = args.findIndex((a) => a === "-o" || a === "--output");
   if (outputIndex !== -1 && args[outputIndex + 1]) {
     outputPath = args[outputIndex + 1];
+  }
+
+  // Parse since flag
+  const sinceIndex = args.findIndex((a) => a === "-s" || a === "--since");
+  if (sinceIndex !== -1 && args[sinceIndex + 1]) {
+    sinceDate = new Date(args[sinceIndex + 1]);
+    if (isNaN(sinceDate.getTime())) {
+      console.error(`Error: Invalid date "${args[sinceIndex + 1]}". Use format like 2024-01-01`);
+      process.exit(1);
+    }
   }
 
   exportPath = path.resolve(exportPath);
@@ -829,8 +888,17 @@ Example:
   }
 
   console.log(`📖 Reading tweets from ${tweetsFile}`);
-  const tweets = parseTweetsJs(tweetsFile);
+  let tweets = parseTweetsJs(tweetsFile);
   console.log(`📊 Found ${tweets.length} tweets`);
+
+  // Filter by --since date
+  if (sinceDate) {
+    tweets = tweets.filter((tweet) => {
+      const dt = parseTweetDate(tweet.created_at);
+      return !isNaN(dt.getTime()) && dt >= sinceDate;
+    });
+    console.log(`📅 ${tweets.length} tweets since ${sinceDate.toISOString().split("T")[0]}`);
+  }
 
   // Try to get username from account.js
   const username = parseAccountJs(exportPath);
@@ -862,6 +930,12 @@ Example:
   // Write HTML file
   const htmlFile = path.join(outputPath, "index.html");
   fs.writeFileSync(htmlFile, html, "utf-8");
+
+  // Write data.yaml
+  console.log("📄 Generating data.yaml...");
+  const yaml = generateYaml(tweets);
+  const yamlFile = path.join(outputPath, "data.yaml");
+  fs.writeFileSync(yamlFile, yaml, "utf-8");
 
   console.log(`✅ Archive created at ${outputPath}`);
   console.log(`   Open ${htmlFile} in your browser to view`);
