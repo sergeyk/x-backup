@@ -16,6 +16,7 @@ npx x-backup <path-to-twitter-export>
 
 This creates an `x-backup/` directory containing:
 - `index.html` - Your complete tweet archive
+- `data.yaml` - Structured data export of all tweets
 - `images/` - All your tweet images
 
 Open `index.html` in any browser to view your archive.
@@ -23,8 +24,24 @@ Open `index.html` in any browser to view your archive.
 ### Options
 
 ```bash
-x-backup <path> -o <output-dir>   # Custom output directory
+x-backup <path> -o <output-dir>       # Custom output directory
+x-backup <path> -s 2024-01-01         # Only include tweets since a date
+x-backup <path> --since 2024-06-15    # Same, long form
 ```
+
+## Features
+
+- **Search** - Full-text search with stemming support (matches "running" when searching "run")
+- **Type filtering** - Filter by Posts, Replies, or Retweets via tabs
+- **Likes filtering** - Filter by minimum number of likes
+- **Sorting** - Sort tweets by date or popularity
+- **Date filtering** - Include only tweets since a given date (`--since`)
+- **Lazy loading** - Images load as you scroll for fast initial load
+- **Links to originals** - Each tweet links back to the original on X.com
+- **YAML export** - Structured `data.yaml` with all tweet metadata
+- **Offline** - Works completely offline, no external dependencies
+- **Self-contained** - Single HTML file with embedded styles and scripts
+- **Zero dependencies** - Uses only Node.js built-in modules
 
 ## Development
 
@@ -41,11 +58,3 @@ To test with the included sample export:
 ```bash
 npm test
 ```
-
-## Features
-
-- **Search** - Find tweets with stemming support (matches "running" when searching "run")
-- **Date filtering** - Filter tweets by date range
-- **Lazy loading** - Images load as you scroll for fast initial load
-- **Offline** - Works completely offline, no external dependencies
-- **Self-contained** - Single HTML file with embedded styles and scripts
