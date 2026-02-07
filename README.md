@@ -58,3 +58,9 @@ To test with the included sample export:
 ```bash
 npm test
 ```
+
+## Developing a "tweet like me" skill:
+
+Here's a prompt you can use with Claude Code:
+
+> Look at my tweets in x-backup/data.yaml, and write a tweet-like-me skill that should be used when asked to write a tweet or x post as me. the skill should explain the writing style, humor, use of formatting and emojis, etc, such that a tweet drafted by invoking the skill is INDISTINGUISHABLE from a tweet actually written by me. pay attention to the number of likes and replies as you analyze the tweets, and try to understand what makes one of my tweets more likely to be engaged with than another.
